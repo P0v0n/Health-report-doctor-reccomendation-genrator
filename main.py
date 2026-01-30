@@ -17,9 +17,9 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from werkzeug.datastructures import FileStorage
 
 
-# Always load .env from the project directory (next to this file),
-# regardless of where you start the process from.
-load_dotenv(dotenv_path=Path(__file__).with_name(".env"), override=False)
+# Always load .env from the project directory (next to this file).
+# override=True so the project .env wins over any existing shell/system env.
+load_dotenv(dotenv_path=Path(__file__).with_name(".env"), override=True)
 
 
 LOG = logging.getLogger("health_report_assistant")
@@ -431,6 +431,13 @@ def _get_env(key: str, default: Optional[str] = None) -> str:
     raise RuntimeError(f"Missing required environment variable: {key}")
 
 
+def _mask_key(key: str) -> str:
+    """Return a safe mask for logging (e.g. ...abcd)."""
+    if not key or len(key) < 4:
+        return "****"
+    return "..." + key.strip()[-4:]
+
+
 def _configure_logging() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -439,6 +446,13 @@ def _configure_logging() -> None:
 
 
 app = create_app()
+
+# Log which API key is active at startup (masked) so you can confirm .env is used.
+try:
+    _key = _get_env("GEMINI_API_KEY")
+    LOG.info("GEMINI_API_KEY loaded: %s", _mask_key(_key))
+except RuntimeError:
+    pass
 
 
 if __name__ == "__main__":
