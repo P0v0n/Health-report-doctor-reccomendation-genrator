@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Health Report Assistant</title>
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" />
+    <style>
+      :root {
+        --bg: #0b1020;
+        --panel: rgba(255, 255, 255, 0.06);
+        --panel-strong: rgba(255, 255, 255, 0.09);
+        --border: rgba(255, 255, 255, 0.14);
+        --text: rgba(255, 255, 255, 0.92);
+        --muted: rgba(255, 255, 255, 0.68);
+        --accent: #7c3aed;
+        --accent-2: #22c55e;
+        --danger: #ef4444;
+      }
+
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji",
+          "Segoe UI Emoji";
+        color: var(--text);
+        background: var(--bg);
+      }
+
+      .shell {
+        max-width: 980px;
+        margin: 0 auto;
+        padding: 28px 16px 18px;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 14px 16px;
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        background: linear-gradient(180deg, var(--panel), transparent);
+        backdrop-filter: blur(10px);
+      }
+
+      .brand {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+
+      .brand h1 {
+        margin: 0;
+        font-size: 16px;
+        letter-spacing: 0.2px;
+        font-weight: 650;
+      }
+
+      .brand p {
+        margin: 0;
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.35;
+      }
+
+      .chip {
+        font-size: 12px;
+        color: var(--muted);
+        border: 1px solid var(--border);
+        padding: 8px 10px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.04);
+        white-space: nowrap;
+      }
+
+      .chat {
+        flex: 1;
+        min-height: 0;
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
+        backdrop-filter: blur(10px);
+        padding: 14px;
+        overflow: auto;
+      }
+
+      .row {
+        display: flex;
+        margin: 10px 0;
+        gap: 10px;
+      }
+
+      .row.user { justify-content: flex-end; }
+      .row.assistant { justify-content: flex-start; }
+
+      .bubble {
+        max-width: min(680px, 92%);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 10px 12px;
+        line-height: 1.45;
+        font-size: 14px;
+        background: var(--panel);
+        word-wrap: break-word;
+        overflow-wrap: anywhere;
+      }
+
+      .bubble.user {
+        border-color: rgba(124, 58, 237, 0.35);
+        background: rgba(124, 58, 237, 0.16);
+      }
+
+      .bubble.assistant {
+        border-color: rgba(34, 197, 94, 0.30);
+        background: rgba(34, 197, 94, 0.10);
+      }
+
+      .bubble pre {
+        overflow: auto;
+        padding: 10px;
+        border-radius: 12px;
+        background: rgba(0, 0, 0, 0.25);
+        border: 1px solid rgba(255, 255, 255, 0.10);
+      }
+
+      .bubble code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-size: 12.5px;
+      }
+
+      .composer {
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 12px;
+        background: linear-gradient(180deg, var(--panel), transparent);
+        backdrop-filter: blur(10px);
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 10px;
+      }
+
+      .controls {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .input {
+        width: 100%;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        background: rgba(0, 0, 0, 0.20);
+        color: var(--text);
+        border-radius: 12px;
+        padding: 12px 12px;
+        outline: none;
+        font-size: 14px;
+      }
+
+      .input:focus { border-color: rgba(124, 58, 237, 0.55); }
+
+      .file {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .file input[type="file"] {
+        width: 100%;
+        max-width: 360px;
+      }
+
+      .actions {
+        display: flex;
+        gap: 10px;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+      }
+
+      button {
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--text);
+        padding: 10px 12px;
+        border-radius: 12px;
+        cursor: pointer;
+        font-weight: 600;
+        font-size: 13px;
+      }
+
+      button.primary {
+        border-color: rgba(124, 58, 237, 0.55);
+        background: rgba(124, 58, 237, 0.18);
+      }
+
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+
+      .error {
+        color: #fecaca;
+        background: rgba(239, 68, 68, 0.12);
+        border: 1px solid rgba(239, 68, 68, 0.25);
+        padding: 10px 12px;
+        border-radius: 12px;
+        font-size: 13px;
+      }
+
+      .hint {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.4;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="topbar">
+        <div  class="brand">
+          <h1>
+            Healthnova 
+          </h1>
+          <p>Upload a lab report PDF, ask questions, and get a fact-based summary + the best specialist type to consult.</p>
+        </div>
+      </div>
+
+      <div id="chat" class="chat" aria-live="polite"></div>
+
+      <div class="composer">
+        <div id="error" class="error" style="display:none;"></div>
+        <div class="controls">
+          <input id="message" class="input" type="text" placeholder="Type your message (e.g., 'Summarize my abnormal biomarkers')" />
+          <div class="file">
+            <label for="file">PDF:</label>
+            <input id="file" type="file" accept="application/pdf" />
+            <span id="fileName"></span>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="clearBtn" type="button">Clear</button>
+          <button id="sendBtn" class="primary" type="button">Send</button>
+        </div>
+        <!-- <div class="hint">
+          Notes: This assistant is not a doctor and won’t provide diagnosis or treatment advice. It reports facts using the report’s reference ranges.
+        </div> -->
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.8/dist/purify.min.js"></script>
+    <script>
+      const chatEl = document.getElementById("chat");
+      const messageEl = document.getElementById("message");
+      const fileEl = document.getElementById("file");
+      const fileNameEl = document.getElementById("fileName");
+      const sendBtn = document.getElementById("sendBtn");
+      const clearBtn = document.getElementById("clearBtn");
+      const errorEl = document.getElementById("error");
+
+      // Maintain conversation history for context
+      let conversationHistory = [];
+
+      function scrollToBottom() {
+        chatEl.scrollTop = chatEl.scrollHeight;
+      }
+
+      function addBubble(role, text, isMarkdown) {
+        const row = document.createElement("div");
+        row.className = "row " + role;
+
+        const bubble = document.createElement("div");
+        bubble.className = "bubble " + role;
+
+        if (isMarkdown) {
+          const unsafe = marked.parse(text || "");
+          bubble.innerHTML = DOMPurify.sanitize(unsafe);
+        } else {
+          bubble.textContent = text || "";
+        }
+
+        row.appendChild(bubble);
+        chatEl.appendChild(row);
+        scrollToBottom();
+        return bubble;
+      }
+
+      function setError(msg) {
+        if (!msg) {
+          errorEl.style.display = "none";
+          errorEl.textContent = "";
+          return;
+        }
+        errorEl.style.display = "block";
+        errorEl.textContent = msg;
+      }
+
+      async function sendMessage() {
+        setError("");
+        const message = (messageEl.value || "").trim();
+        const file = fileEl.files && fileEl.files[0] ? fileEl.files[0] : null;
+
+        if (!message && !file) {
+          setError("Please type a message or upload a PDF report.");
+          return;
+        }
+
+        addBubble("user", message, false);
+        messageEl.value = "";
+
+        const thinkingBubble = addBubble("assistant", "Working…", false);
+
+        const formData = new FormData();
+        formData.append("message", message);
+        formData.append("history", JSON.stringify(conversationHistory));
+        if (file) {
+          formData.append("file", file);
+        }
+
+        sendBtn.disabled = true;
+        messageEl.disabled = true;
+        fileEl.disabled = true;
+
+        try {
+          const res = await fetch("/chat", {
+            method: "POST",
+            body: formData,
+          });
+
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            const err = data && data.error ? data.error : "Request failed.";
+            throw new Error(err);
+          }
+
+          const replyMarkdown = data.reply_markdown || "";
+          thinkingBubble.innerHTML = DOMPurify.sanitize(marked.parse(replyMarkdown));
+
+          // Update conversation history from server response
+          if (data.history && Array.isArray(data.history)) {
+            conversationHistory = data.history;
+          }
+        } catch (e) {
+          thinkingBubble.textContent = "Error.";
+          setError(e && e.message ? e.message : "Something went wrong.");
+        } finally {
+          sendBtn.disabled = false;
+          messageEl.disabled = false;
+          fileEl.disabled = false;
+        }
+      }
+
+      sendBtn.addEventListener("click", sendMessage);
+      messageEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") sendMessage();
+      });
+
+      clearBtn.addEventListener("click", () => {
+        chatEl.innerHTML = "";
+        setError("");
+        messageEl.value = "";
+        fileEl.value = "";
+        fileNameEl.textContent = "";
+        conversationHistory = []; // Reset history
+      });
+
+      fileEl.addEventListener("change", () => {
+        const f = fileEl.files && fileEl.files[0] ? fileEl.files[0] : null;
+        fileNameEl.textContent = f ? f.name : "";
+      });
+
+      // Initial assistant greeting (friendly, but still scoped to health reports)
+      addBubble(
+        "assistant",
+        "Hi i am your health report assistant.  I can help you analyze your health report and recommend the best specialist to consult.",
+        true
+      );
+    </script>
+  </body>
+</html>
+
