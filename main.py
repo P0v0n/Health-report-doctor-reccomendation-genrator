@@ -125,6 +125,9 @@ class ChatForm(BaseModel):
 
 ALLOWED_EXTENSIONS = {".pdf"}
 
+MAX_PDF_PAGES: int = 7
+MAX_REPORT_CHARS: int = 20_000
+
 
 def _save_pdf_upload(file_storage: FileStorage, uploads_dir: Path) -> Path:
     """Save an uploaded PDF securely to a temporary location.
@@ -172,10 +175,17 @@ def extract_pdf_text(path: Path) -> str:
     try:
         with pdfplumber.open(str(path)) as pdf:
             pages_text: List[str] = []
-            for page in pdf.pages:
+            total_pages = len(pdf.pages)
+            for page in pdf.pages[:MAX_PDF_PAGES]:
                 page_text = page.extract_text() or ""
                 if page_text.strip():
                     pages_text.append(page_text)
+            if total_pages > MAX_PDF_PAGES:
+                LOG.info(
+                    "PDF truncated from %d to %d pages for processing.",
+                    total_pages,
+                    MAX_PDF_PAGES,
+                )
     except (OSError, ValueError) as exc:
         raise ValueError("Could not read the PDF. Please upload a text-based report PDF.") from exc
 
@@ -271,6 +281,15 @@ def call_gemini(
     # New google-genai client uses the stable v1 Gemini API.
     client = genai.Client(api_key=api_key)
     model_name = _get_env("GEMINI_MODEL", default="gemini-3-flash-preview")
+
+    # Optionally truncate very large reports to keep latency low and prompts manageable.
+    if report_text and len(report_text) > MAX_REPORT_CHARS:
+        LOG.info(
+            "Report text truncated from %d to %d characters before sending to Gemini.",
+            len(report_text),
+            MAX_REPORT_CHARS,
+        )
+        report_text = report_text[:MAX_REPORT_CHARS]
 
     # Build context + (optional) conversation history into a single prompt.
     context_parts: List[str] = [APP_UI_CONTEXT]
@@ -457,4 +476,4 @@ except RuntimeError:
 
 if __name__ == "__main__":
     # For local dev only. Use a production WSGI server in deployment.
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=8000, debug=True)
