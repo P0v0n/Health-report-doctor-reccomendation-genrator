@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
@@ -42,6 +43,34 @@ def create_app() -> Flask:
     def index() -> str:
         return render_template("index.html")
 
+    @app.post("/upload-report")
+    def upload_report() -> Any:
+        """Upload a PDF once and cache its extracted text for later chat turns.
+
+        Mobile connections are often unstable for large uploads, so this endpoint
+        lets the frontend upload the PDF a single time and then reference it via
+        a lightweight report_id on each subsequent /chat call.
+        """
+        file_storage = request.files.get("file")
+        if not file_storage:
+            return jsonify({"error": "PDF file is required."}), 400
+
+        try:
+            saved_path = _save_pdf_upload(file_storage=file_storage, uploads_dir=uploads_dir)
+            report_text = extract_pdf_text(path=saved_path)
+        except (ValueError, OSError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        finally:
+            # Best-effort cleanup
+            try:
+                if "saved_path" in locals():
+                    saved_path.unlink(missing_ok=True)  # type: ignore[union-attr]
+            except OSError:
+                LOG.warning("Failed to delete temp upload in /upload-report.", exc_info=True)
+
+        report_id, _ = _cache_report(report_text=report_text)
+        return jsonify({"report_id": report_id})
+
     @app.post("/chat")
     def chat() -> Any:
         try:
@@ -52,10 +81,14 @@ def create_app() -> Flask:
             except (json.JSONDecodeError, TypeError):
                 history = []
 
+            report_id_raw = (request.form.get("report_id") or "").strip()
+            has_report = bool(report_id_raw)
+
             form = ChatForm.model_validate(
                 {
                     "message": (request.form.get("message") or "").strip(),
                     "has_file": bool(request.files.get("file")),
+                    "has_report": has_report,
                 }
             )
         except ValidationError as exc:
@@ -68,6 +101,8 @@ def create_app() -> Flask:
                 ),
                 400,
             )
+
+        report_id: Optional[str] = report_id_raw if has_report else None
 
         file_storage = request.files.get("file")
         report_text = ""
@@ -87,6 +122,19 @@ def create_app() -> Flask:
                         saved_path.unlink(missing_ok=True)  # type: ignore[union-attr]
                 except OSError:
                     LOG.warning("Failed to delete temp upload.", exc_info=True)
+        elif report_id:
+            cached_report = REPORT_CACHE.get(report_id)
+            if not cached_report:
+                return (
+                    jsonify(
+                        {
+                            "error": "This report is no longer available. Please upload the PDF again.",
+                        }
+                    ),
+                    400,
+                )
+            report_text = cached_report.text
+            patient_name_hint = cached_report.patient_name_hint
 
         user_message = form.message
         if not user_message.strip() and report_text:
@@ -114,11 +162,12 @@ def create_app() -> Flask:
 class ChatForm(BaseModel):
     message: str = Field(default="", max_length=4000)
     has_file: bool
+    has_report: bool = False
 
     @model_validator(mode="after")
     def ensure_message_or_file(self) -> "ChatForm":
         """Ensure that at least one of message or file is provided."""
-        if not self.message.strip() and not self.has_file:
+        if not self.message.strip() and not (self.has_file or self.has_report):
             raise ValueError("Either a message or a PDF file is required.")
         return self
 
@@ -127,6 +176,16 @@ ALLOWED_EXTENSIONS = {".pdf"}
 
 MAX_PDF_PAGES: int = 7
 MAX_REPORT_CHARS: int = 20_000
+MAX_HISTORY_MESSAGES: int = 16
+REPORT_CACHE_MAX_ITEMS: int = 100
+
+
+class CachedReport(BaseModel):
+    text: str
+    patient_name_hint: Optional[str] = None
+
+
+REPORT_CACHE: "OrderedDict[str, CachedReport]" = OrderedDict()
 
 
 def _save_pdf_upload(file_storage: FileStorage, uploads_dir: Path) -> Path:
@@ -215,6 +274,25 @@ def extract_patient_name_hint(report_text: str) -> Optional[str]:
     return None
 
 
+def _cache_report(report_text: str) -> Tuple[str, Optional[str]]:
+    """Store extracted report text in a small in-memory cache.
+
+    This keeps the PDF upload as a one-time operation (especially helpful for
+    mobile users), and later chat turns reference the cached text via a
+    lightweight report_id instead of re-uploading the entire file.
+    """
+    patient_name_hint = extract_patient_name_hint(report_text)
+    report_id = uuid4().hex
+
+    REPORT_CACHE[report_id] = CachedReport(text=report_text, patient_name_hint=patient_name_hint)
+    if len(REPORT_CACHE) > REPORT_CACHE_MAX_ITEMS:
+        oldest_key, _ = REPORT_CACHE.popitem(last=False)
+        LOG.info("Evicted oldest cached report_id: %s", oldest_key)
+
+    LOG.info("Cached report_id=%s (length=%d).", report_id, len(report_text))
+    return report_id, patient_name_hint
+
+
 SYSTEM_INSTRUCTION = """Role: Highly intelligent medical administrative assistant.
 
 Constraints:
@@ -225,6 +303,13 @@ Constraints:
 Core job (when a PDF is provided):
 - When HEALTH_REPORT_TEXT contains actual report content, identify abnormal biomarkers strictly using the reference ranges in the report.
 - Recommend the single best type of medical specialist (e.g., Hematologist, Cardiologist) for the user to consult.
+
+Patient name vs. tester name:
+- Use ONLY the patient's name (e.g. "Patient Name", "Name of Patient", "Patient:"). Do NOT use tester name, technician name, "Collected by", "Reported by", or any other staff name as the patient identity. If the report has no clear patient name field, use "Patient: Unknown"—never substitute with a tester or lab staff name.
+
+Report value accuracy:
+- Stick strictly to the values as printed in the report. Do not approximate, round differently, or invent values. Report the exact biomarker name, numeric value, and reference range from the report.
+- Identify BOTH above-reference (high) AND below-reference (low) abnormal values. Many reports include tests that are low—capture them. Each abnormal finding in key_findings MUST specify the direction: "high" or "low" based on the reference range.
 
 Behavior when NO PDF is provided (HEALTH_REPORT_TEXT is \"(No PDF provided.)\"):
 - Do NOT invent or assume any patient name.
@@ -240,15 +325,15 @@ Conversation scope (general):
 
 Formatting:
 - Use Markdown for clarity.
-- When you are summarizing a specific patient's lab results from an actual HEALTH_REPORT_TEXT, start the Markdown with the patient's name from the report if available.
+- When you are summarizing a specific patient's lab results from an actual HEALTH_REPORT_TEXT, start the Markdown with the patient's name from the report if available (patient name ONLY, never tester/staff names). If no patient name is identifiable in the report, use "Patient: Unknown".
 
 Output requirements:
 - Return ONLY a valid JSON object.
 - The JSON object MUST contain these keys exactly: doctor_type, reasoning, urgency_level, key_findings, reply_markdown
-- reply_markdown MUST be Markdown. For lab-result summaries, it SHOULD start with the patient's name (or \"Patient: Unknown\" if the name is not present derive it from file name or check the file twice and answer on basis of report after that chat ). For pure chit-chat or UX questions with no PDF, a normal conversational opening is fine and MUST NOT claim you analyzed a report.
+- reply_markdown MUST be Markdown. For lab-result summaries, it SHOULD start with the patient's name (patient name field only—never tester or staff name) or \"Patient: Unknown\" if the name is not present. For pure chit-chat or UX questions with no PDF, a normal conversational opening is fine and MUST NOT claim you analyzed a report.
 - doctor_type MUST be a single specialist type (string).
 - urgency_level MUST be one of: low, medium, high
-- key_findings MUST be an array of concise strings listing abnormal biomarkers and the direction (high/low) based on the provided reference ranges when a report is present, or an empty array when no report is provided."""
+- key_findings MUST be an array of concise strings listing abnormal biomarkers and the direction (high or low) based on the provided reference ranges when a report is present. Include BOTH high and low abnormals. Use the exact values from the report. Empty array when no report is provided."""
 
 
 APP_UI_CONTEXT = """App UI context:
@@ -358,11 +443,13 @@ def call_gemini(
     else:
         payload = _normalize_payload(parsed)
 
-    # Update conversation history
+    # Update conversation history (truncate to the most recent messages to keep prompts bounded).
     updated_history = (conversation_history or []) + [
         {"role": "user", "content": user_message},
         {"role": "assistant", "content": payload["reply_markdown"]},
     ]
+    if len(updated_history) > MAX_HISTORY_MESSAGES:
+        updated_history = updated_history[-MAX_HISTORY_MESSAGES:]
 
     return payload, updated_history
 

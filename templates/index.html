@@ -269,6 +269,15 @@
 
       // Maintain conversation history for context
       let conversationHistory = [];
+      // Cache the uploaded report on the server and reference it by ID to
+      // avoid re-uploading large PDFs on every message (especially on mobile).
+      let currentReportId = null;
+      let lastUploadedFileSignature = null;
+
+      function fileSignature(file) {
+        if (!file) return null;
+        return `${file.name}|${file.size}|${file.lastModified}`;
+      }
 
       function scrollToBottom() {
         chatEl.scrollTop = chatEl.scrollHeight;
@@ -304,6 +313,12 @@
         errorEl.textContent = msg;
       }
 
+      function setInputsDisabled(isDisabled) {
+        sendBtn.disabled = isDisabled;
+        messageEl.disabled = isDisabled;
+        fileEl.disabled = isDisabled;
+      }
+
       async function sendMessage() {
         setError("");
         const message = (messageEl.value || "").trim();
@@ -319,16 +334,47 @@
 
         const thinkingBubble = addBubble("assistant", "Working…", false);
 
+        setInputsDisabled(true);
+
+        // If a PDF is selected and either we have never uploaded it or the
+        // file changed, upload once to /upload-report and cache the text
+        // server-side. Subsequent /chat calls only send report_id.
+        if (file) {
+          const signature = fileSignature(file);
+          if (!currentReportId || signature !== lastUploadedFileSignature) {
+            try {
+              const uploadForm = new FormData();
+              uploadForm.append("file", file);
+
+              const uploadRes = await fetch("/upload-report", {
+                method: "POST",
+                body: uploadForm,
+              });
+              const uploadData = await uploadRes.json().catch(() => ({}));
+              if (!uploadRes.ok || !uploadData.report_id) {
+                const uploadError =
+                  uploadData && uploadData.error
+                    ? uploadData.error
+                    : "Failed to upload PDF.";
+                throw new Error(uploadError);
+              }
+              currentReportId = uploadData.report_id;
+              lastUploadedFileSignature = signature;
+            } catch (e) {
+              thinkingBubble.textContent = "Error.";
+              setError(e && e.message ? e.message : "Could not upload PDF.");
+              setInputsDisabled(false);
+              return;
+            }
+          }
+        }
+
         const formData = new FormData();
         formData.append("message", message);
         formData.append("history", JSON.stringify(conversationHistory));
-        if (file) {
-          formData.append("file", file);
+        if (currentReportId) {
+          formData.append("report_id", currentReportId);
         }
-
-        sendBtn.disabled = true;
-        messageEl.disabled = true;
-        fileEl.disabled = true;
 
         try {
           const res = await fetch("/chat", {
@@ -353,9 +399,7 @@
           thinkingBubble.textContent = "Error.";
           setError(e && e.message ? e.message : "Something went wrong.");
         } finally {
-          sendBtn.disabled = false;
-          messageEl.disabled = false;
-          fileEl.disabled = false;
+          setInputsDisabled(false);
         }
       }
 
@@ -371,6 +415,8 @@
         fileEl.value = "";
         fileNameEl.textContent = "";
         conversationHistory = []; // Reset history
+        currentReportId = null;
+        lastUploadedFileSignature = null;
       });
 
       fileEl.addEventListener("change", () => {

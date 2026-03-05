@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-02-11
+
+- Updated `SYSTEM_INSTRUCTION` prompt:
+  - **Patient name only:** Explicit rule to use only the patient's name field—never tester, technician, "Collected by", or staff names. Use "Patient: Unknown" if no patient name is in the report.
+  - **Report value accuracy:** Instruct model to stick to exact values from the report, include both high and low abnormal biomarkers, and specify direction (high/low) for each finding.
+
 ## 2026-01-28
 
 - Added Flask backend (`main.py`) with:
