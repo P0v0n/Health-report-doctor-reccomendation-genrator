@@ -4,9 +4,14 @@ import json
 import logging
 import os
 import re
+import socket
+import time
 from collections import OrderedDict
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from google import genai
@@ -16,6 +21,7 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request
 from pydantic import BaseModel, Field, ValidationError, model_validator
 from werkzeug.datastructures import FileStorage
+from werkzeug.exceptions import RequestEntityTooLarge
 
 
 # Always load .env from the project directory (next to this file).
@@ -38,6 +44,17 @@ def create_app() -> Flask:
     uploads_dir.mkdir(parents=True, exist_ok=True)
 
     _configure_logging()
+
+    @app.errorhandler(RequestEntityTooLarge)
+    def handle_request_too_large(_: RequestEntityTooLarge) -> Any:
+        return (
+            jsonify(
+                {
+                    "error": "File too large. Please upload a smaller PDF (max 16 MB) or use a shorter report.",
+                }
+            ),
+            413,
+        )
 
     @app.get("/")
     def index() -> str:
@@ -69,6 +86,35 @@ def create_app() -> Flask:
                 LOG.warning("Failed to delete temp upload in /upload-report.", exc_info=True)
 
         report_id, _ = _cache_report(report_text=report_text)
+        return jsonify({"report_id": report_id})
+
+    @app.post("/ingest-report-url")
+    def ingest_report_url() -> Any:
+        """Ingest a remote PDF URL, extract text, and cache it as report_id."""
+        pdf_url = _get_pdf_url_from_request()
+        if not pdf_url:
+            return jsonify({"error": "pdf_url is required."}), 400
+
+        try:
+            _validate_remote_pdf_url(pdf_url)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        start = time.monotonic()
+        try:
+            saved_path = _download_pdf_to_temp(pdf_url=pdf_url, uploads_dir=uploads_dir)
+            report_text = extract_pdf_text(path=saved_path)
+        except (ValueError, OSError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        finally:
+            try:
+                if "saved_path" in locals():
+                    saved_path.unlink(missing_ok=True)  # type: ignore[union-attr]
+            except OSError:
+                LOG.warning("Failed to delete temp download in /ingest-report-url.", exc_info=True)
+
+        report_id, _ = _cache_report(report_text=report_text)
+        LOG.info("Ingested pdf_url in %.0fms (report_id=%s).", (time.monotonic() - start) * 1000, report_id)
         return jsonify({"report_id": report_id})
 
     @app.post("/chat")
@@ -178,6 +224,122 @@ MAX_PDF_PAGES: int = 7
 MAX_REPORT_CHARS: int = 20_000
 MAX_HISTORY_MESSAGES: int = 16
 REPORT_CACHE_MAX_ITEMS: int = 100
+REMOTE_PDF_MAX_BYTES: int = 16 * 1024 * 1024  # keep aligned with MAX_CONTENT_LENGTH
+
+
+def _get_pdf_url_from_request() -> str:
+    if request.is_json:
+        body = request.get_json(silent=True) or {}
+        return str(body.get("pdf_url") or "").strip()
+    return str(request.form.get("pdf_url") or "").strip()
+
+
+def _allowed_remote_pdf_hosts() -> List[str]:
+    raw = os.getenv("REMOTE_PDF_HOST_ALLOWLIST", "").strip()
+    if raw:
+        return [h.strip().lower() for h in raw.split(",") if h.strip()]
+    return ["143.110.185.63", "healthnovoindia.com", ".healthnovoindia.com"]
+
+
+def _is_host_allowed(host: str) -> bool:
+    host_l = host.lower().strip(".")
+    for allowed in _allowed_remote_pdf_hosts():
+        a = allowed.strip()
+        if not a:
+            continue
+        if a.startswith("."):
+            suffix = a.lstrip(".")
+            if host_l == suffix or host_l.endswith("." + suffix):
+                return True
+        elif host_l == a:
+            return True
+    return False
+
+
+def _validate_resolved_ips(host: str) -> None:
+    """Resolve host and block private/loopback/link-local/reserved ranges (SSRF protection)."""
+    try:
+        addr_infos = socket.getaddrinfo(host, None)
+    except socket.gaierror as exc:
+        raise ValueError("Could not resolve PDF host.") from exc
+
+    if not addr_infos:
+        raise ValueError("Could not resolve PDF host.")
+
+    for info in addr_infos:
+        ip_str = info[4][0]
+        ip = ip_address(ip_str)
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            raise ValueError("PDF host resolves to a disallowed network address.")
+
+
+def _validate_remote_pdf_url(pdf_url: str) -> None:
+    parsed = urlparse(pdf_url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("pdf_url must start with http:// or https://")
+    if not parsed.netloc:
+        raise ValueError("pdf_url is invalid.")
+    host = parsed.hostname or ""
+    if not host:
+        raise ValueError("pdf_url host is invalid.")
+    if host.lower() in {"localhost"}:
+        raise ValueError("pdf_url host is not allowed.")
+    if not _is_host_allowed(host):
+        raise ValueError("pdf_url host is not allowlisted.")
+    _validate_resolved_ips(host)
+
+
+def _download_pdf_to_temp(pdf_url: str, uploads_dir: Path) -> Path:
+    """Download a remote PDF with a hard byte cap and basic signature validation."""
+    req = Request(
+        pdf_url,
+        headers={
+            "User-Agent": "health-report-assistant/1.0",
+            "Accept": "application/pdf,application/octet-stream;q=0.9,*/*;q=0.8",
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(req, timeout=20) as resp:  # nosec - URL is validated + allowlisted
+            content_length = resp.headers.get("Content-Length")
+            if content_length:
+                try:
+                    if int(content_length) > REMOTE_PDF_MAX_BYTES:
+                        raise ValueError("Remote PDF is too large.")
+                except ValueError:
+                    # Ignore malformed Content-Length; enforce via streaming cap below.
+                    pass
+
+            safe_name = f"{uuid4().hex}.pdf"
+            dest_path = uploads_dir / safe_name
+            bytes_read = 0
+            with dest_path.open("wb") as f:
+                first_chunk = resp.read(5)
+                if first_chunk != b"%PDF-":
+                    raise ValueError("Remote file does not look like a valid PDF.")
+                f.write(first_chunk)
+                bytes_read += len(first_chunk)
+
+                while True:
+                    chunk = resp.read(64 * 1024)
+                    if not chunk:
+                        break
+                    bytes_read += len(chunk)
+                    if bytes_read > REMOTE_PDF_MAX_BYTES:
+                        raise ValueError("Remote PDF is too large.")
+                    f.write(chunk)
+            return dest_path
+    except ValueError:
+        raise
+    except OSError as exc:
+        raise ValueError("Failed to download the remote PDF.") from exc
 
 
 class CachedReport(BaseModel):
@@ -357,7 +519,7 @@ def call_gemini(
         conversation_history: Previous messages in format [{"role": "user", "content": "..."}, ...].
 
     Returns:
-        Tuple of (payload dict, updated_history list).
+        Tuple of (payload dict, updated_history list).  
 
     Raises:
         RuntimeError: If Gemini is not configured or responses are unusable.

@@ -324,12 +324,14 @@
         const message = (messageEl.value || "").trim();
         const file = fileEl.files && fileEl.files[0] ? fileEl.files[0] : null;
 
-        if (!message && !file) {
+        if (!message && !file && !currentReportId) {
           setError("Please type a message or upload a PDF report.");
           return;
         }
 
-        addBubble("user", message, false);
+        if (message) {
+          addBubble("user", message, false);
+        }
         messageEl.value = "";
 
         const thinkingBubble = addBubble("assistant", "Working…", false);
@@ -424,12 +426,53 @@
         fileNameEl.textContent = f ? f.name : "";
       });
 
+      async function ingestReportFromQuery() {
+        const params = new URLSearchParams(window.location.search || "");
+        const pdfurl = (params.get("pdfurl") || "").trim();
+        if (!pdfurl) return;
+
+        setError("");
+        setInputsDisabled(true);
+        const bubble = addBubble("assistant", "Loading your report…", false);
+
+        try {
+          const fd = new FormData();
+          fd.append("pdf_url", pdfurl);
+          const res = await fetch("/ingest-report-url", { method: "POST", body: fd });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.report_id) {
+            const err = data && data.error ? data.error : "Could not load the PDF link.";
+            throw new Error(err);
+          }
+
+          currentReportId = data.report_id;
+          lastUploadedFileSignature = null;
+          fileEl.value = "";
+          fileNameEl.textContent = "Loaded from link";
+
+          // Clear query params to prevent re-ingest on refresh.
+          const newUrl = window.location.pathname + window.location.hash;
+          window.history.replaceState(null, "", newUrl);
+
+          // Auto-analyze once the report is loaded.
+          bubble.textContent = "Report loaded. Analyzing…";
+          await sendMessage();
+        } catch (e) {
+          bubble.textContent = "Error.";
+          setError(e && e.message ? e.message : "Could not load the PDF link.");
+        } finally {
+          setInputsDisabled(false);
+        }
+      }
+
       // Initial assistant greeting (friendly, but still scoped to health reports)
       addBubble(
         "assistant",
         "Hi i am your health report assistant.  I can help you analyze your health report and recommend the best specialist to consult.",
         true
       );
+
+      ingestReportFromQuery();
     </script>
   </body>
 </html>

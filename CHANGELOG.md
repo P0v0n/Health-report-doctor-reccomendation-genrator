@@ -5,6 +5,14 @@
 - Updated `SYSTEM_INSTRUCTION` prompt:
   - **Patient name only:** Explicit rule to use only the patient's name field—never tester, technician, "Collected by", or staff names. Use "Patient: Unknown" if no patient name is in the report.
   - **Report value accuracy:** Instruct model to stick to exact values from the report, include both high and low abnormal biomarkers, and specify direction (high/low) for each finding.
+- Added PDF performance + mobile reliability improvements:
+  - Backend: capped PDF page extraction + report text length before Gemini.
+  - Frontend: upload PDF once and reuse `report_id` across chat turns (prevents repeated large uploads).
+- Added deep-link support for report PDFs:
+  - Backend: `POST /ingest-report-url` ingests a remote `pdf_url` with allowlisting + SSRF protections and returns `report_id`.
+  - Frontend: reads `?pdfurl=...`, ingests automatically, clears the query params, and auto-runs analysis.
+- Improved error handling:
+  - Returns JSON for 413 “file too large” so the UI can show a clear message.
 
 ## 2026-01-28
 
