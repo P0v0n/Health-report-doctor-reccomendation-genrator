@@ -202,6 +202,37 @@ def create_app() -> Flask:
 
         return jsonify({**gemini_payload, "history": updated_history})
 
+    @app.post("/translate")
+    def translate() -> Any:
+        try:
+            body = request.get_json(silent=True) or {}
+            form = TranslateForm.model_validate(
+                {
+                    "source_markdown": str(body.get("source_markdown") or ""),
+                    "target_language": str(body.get("target_language") or "").strip(),
+                }
+            )
+        except ValidationError as exc:
+            return (
+                jsonify(
+                    {
+                        "error": "Invalid translation request.",
+                        "details": exc.errors(),
+                    }
+                ),
+                400,
+            )
+
+        try:
+            translated = translate_markdown(
+                source_markdown=form.source_markdown,
+                target_language=form.target_language,
+            )
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 500
+
+        return jsonify({"translated_markdown": translated})
+
     return app
 
 
@@ -225,6 +256,11 @@ MAX_REPORT_CHARS: int = 20_000
 MAX_HISTORY_MESSAGES: int = 16
 REPORT_CACHE_MAX_ITEMS: int = 100
 REMOTE_PDF_MAX_BYTES: int = 16 * 1024 * 1024  # keep aligned with MAX_CONTENT_LENGTH
+
+
+class TranslateForm(BaseModel):
+    source_markdown: str = Field(min_length=1, max_length=20_000)
+    target_language: str = Field(pattern="^(hi|mr)$")
 
 
 def _get_pdf_url_from_request() -> str:
@@ -614,6 +650,55 @@ def call_gemini(
         updated_history = updated_history[-MAX_HISTORY_MESSAGES:]
 
     return payload, updated_history
+
+
+def translate_markdown(source_markdown: str, target_language: str) -> str:
+    """Translate an existing Markdown report into Hindi or Marathi.
+
+    The translation must preserve ALL numeric values, units, biomarker
+    names, and reference ranges exactly as in the source. Only natural
+    language around those values may change.
+    """
+    api_key = _get_env("GEMINI_API_KEY")
+    client = genai.Client(api_key=api_key)
+    model_name = _get_env("GEMINI_MODEL", default="gemini-3-flash-preview")
+
+    if target_language == "hi":
+        language_label = "Hindi"
+    elif target_language == "mr":
+        language_label = "Marathi"
+    else:
+        raise RuntimeError("Unsupported target language.")
+
+    system_instruction = (
+        "You are a precise medical report translator. Translate the following "
+        f"Markdown into {language_label}. You MUST:\n"
+        "- Preserve all biomarker names exactly as written.\n"
+        "- Preserve all numeric values, units, and reference ranges exactly as written.\n"
+        "- Do not add or remove any findings, biomarkers, or advice.\n"
+        "- Keep the same overall structure (headings, bullet points) where possible.\n"
+        "- Output ONLY the translated Markdown, no explanations.\n"
+    )
+
+    prompt = f"{system_instruction}\n\n---\n\nSOURCE MARKDOWN:\n{source_markdown}"
+
+    try:
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.2,
+                max_output_tokens=4096,
+            ),
+        )
+    except Exception as exc:
+        LOG.exception("Gemini translation request failed.", exc_info=True)
+        raise RuntimeError(f"Translation failed: {exc}") from exc
+
+    text = (getattr(response, "text", None) or "").strip()
+    if not text:
+        raise RuntimeError("Translation failed: empty response from model.")
+    return text
 
 
 def _parse_json_best_effort(text: str) -> Optional[Dict[str, Any]]:

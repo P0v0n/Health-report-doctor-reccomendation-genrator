@@ -228,7 +228,7 @@
       <div class="topbar">
         <div  class="brand">
           <h1>
-            Healthnova 
+            Healthnovo
           </h1>
           <p>Upload a lab report PDF, ask questions, and get a fact-based summary + the best specialist type to consult.</p>
         </div>
@@ -273,6 +273,7 @@
       // avoid re-uploading large PDFs on every message (especially on mobile).
       let currentReportId = null;
       let lastUploadedFileSignature = null;
+      let lastAssistantMarkdown = "";
 
       function fileSignature(file) {
         if (!file) return null;
@@ -317,6 +318,73 @@
         sendBtn.disabled = isDisabled;
         messageEl.disabled = isDisabled;
         fileEl.disabled = isDisabled;
+      }
+
+      function addTranslationControls(container, sourceMarkdown) {
+        if (!sourceMarkdown) return;
+
+        const existing = container.querySelector(".translation-controls");
+        if (existing) {
+          existing.remove();
+        }
+
+        const wrapper = document.createElement("div");
+        wrapper.className = "translation-controls";
+        wrapper.style.marginTop = "8px";
+        wrapper.style.display = "flex";
+        wrapper.style.gap = "6px";
+        wrapper.style.flexWrap = "wrap";
+
+        const label = document.createElement("span");
+        label.textContent = "View this report in:";
+        label.style.fontSize = "12px";
+        label.style.opacity = "0.75";
+        wrapper.appendChild(label);
+
+        function makeButton(text, targetLang) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.textContent = text;
+          btn.style.fontSize = "12px";
+          btn.style.padding = "4px 8px";
+          btn.style.borderRadius = "999px";
+          btn.addEventListener("click", async () => {
+            await translateReport(sourceMarkdown, targetLang);
+          });
+          return btn;
+        }
+
+        wrapper.appendChild(makeButton("Hindi", "hi"));
+        wrapper.appendChild(makeButton("Marathi", "mr"));
+
+        container.appendChild(wrapper);
+      }
+
+      async function translateReport(sourceMarkdown, targetLanguage) {
+        setError("");
+        const bubble = addBubble("assistant", `Translating to ${targetLanguage === "hi" ? "Hindi" : "Marathi"}…`, false);
+        try {
+          const res = await fetch("/translate", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              source_markdown: sourceMarkdown,
+              target_language: targetLanguage,
+            }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.translated_markdown) {
+            const err = data && data.error ? data.error : "Translation failed.";
+            throw new Error(err);
+          }
+          lastAssistantMarkdown = data.translated_markdown;
+          bubble.innerHTML = DOMPurify.sanitize(marked.parse(lastAssistantMarkdown));
+        } catch (e) {
+          bubble.textContent = "Error.";
+          setError(e && e.message ? e.message : "Could not translate the report.");
+        }
       }
 
       async function sendMessage() {
@@ -391,7 +459,9 @@
           }
 
           const replyMarkdown = data.reply_markdown || "";
+          lastAssistantMarkdown = replyMarkdown;
           thinkingBubble.innerHTML = DOMPurify.sanitize(marked.parse(replyMarkdown));
+          addTranslationControls(thinkingBubble, lastAssistantMarkdown);
 
           // Update conversation history from server response
           if (data.history && Array.isArray(data.history)) {

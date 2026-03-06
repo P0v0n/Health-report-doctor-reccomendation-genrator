@@ -13,6 +13,9 @@
   - Frontend: reads `?pdfurl=...`, ingests automatically, clears the query params, and auto-runs analysis.
 - Improved error handling:
   - Returns JSON for 413 “file too large” so the UI can show a clear message.
+- Added multilingual report view:
+  - Backend: `/translate` endpoint translates existing Markdown summaries into Hindi or Marathi while preserving all biomarker names, numbers, units, and reference ranges.
+  - Frontend: adds “View this report in: Hindi / Marathi” controls under each assistant report bubble, calling `/translate` and rendering the translated Markdown.
 
 ## 2026-01-28
 
