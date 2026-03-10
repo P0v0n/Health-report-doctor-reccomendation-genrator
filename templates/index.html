@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Health Report Assistant</title>
+    <title></title>
     <link rel="preconnect" href="https://cdn.jsdelivr.net" />
     <style>
       :root {
@@ -52,8 +52,9 @@
 
       .brand {
         display: flex;
-        flex-direction: column;
-        gap: 2px;
+        flex-direction: row;
+        align-items: center;
+        gap: 10px;
       }
 
       .brand h1 {
@@ -68,6 +69,14 @@
         font-size: 12px;
         color: var(--muted);
         line-height: 1.35;
+      }
+
+      .brand-logo {
+        width: 40px;
+        height: 40px;
+        border-radius: 8px;
+        object-fit: contain;
+        background: #000;
       }
 
       .chip {
@@ -166,19 +175,6 @@
 
       .input:focus { border-color: rgba(124, 58, 237, 0.55); }
 
-      .file {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        color: var(--muted);
-        font-size: 12px;
-      }
-
-      .file input[type="file"] {
-        width: 100%;
-        max-width: 360px;
-      }
-
       .actions {
         display: flex;
         gap: 10px;
@@ -226,12 +222,17 @@
   <body>
     <div class="shell">
       <div class="topbar">
-        <div  class="brand">
+        <div class="brand">
           <h1>
             Healthnovo
           </h1>
-          <p>Upload a lab report PDF, ask questions, and get a fact-based summary + the best specialist type to consult.</p>
+          <p></p>
         </div>
+        <img
+          src="static\healthnova-logo.png"
+          alt="Healthnovo logo"
+          class="brand-logo"
+        />
       </div>
 
       <div id="chat" class="chat" aria-live="polite"></div>
@@ -240,11 +241,6 @@
         <div id="error" class="error" style="display:none;"></div>
         <div class="controls">
           <input id="message" class="input" type="text" placeholder="Type your message (e.g., 'Summarize my abnormal biomarkers')" />
-          <div class="file">
-            <label for="file">PDF:</label>
-            <input id="file" type="file" accept="application/pdf" />
-            <span id="fileName"></span>
-          </div>
         </div>
         <div class="actions">
           <button id="clearBtn" type="button">Clear</button>
@@ -261,24 +257,16 @@
     <script>
       const chatEl = document.getElementById("chat");
       const messageEl = document.getElementById("message");
-      const fileEl = document.getElementById("file");
-      const fileNameEl = document.getElementById("fileName");
       const sendBtn = document.getElementById("sendBtn");
       const clearBtn = document.getElementById("clearBtn");
       const errorEl = document.getElementById("error");
 
       // Maintain conversation history for context
       let conversationHistory = [];
-      // Cache the uploaded report on the server and reference it by ID to
-      // avoid re-uploading large PDFs on every message (especially on mobile).
+      // Cache the uploaded/ingested report on the server and reference it by ID.
       let currentReportId = null;
-      let lastUploadedFileSignature = null;
       let lastAssistantMarkdown = "";
-
-      function fileSignature(file) {
-        if (!file) return null;
-        return `${file.name}|${file.size}|${file.lastModified}`;
-      }
+      let preferredLanguage = "en"; // "en" | "hi" | "mr"
 
       function scrollToBottom() {
         chatEl.scrollTop = chatEl.scrollHeight;
@@ -317,10 +305,50 @@
       function setInputsDisabled(isDisabled) {
         sendBtn.disabled = isDisabled;
         messageEl.disabled = isDisabled;
-        fileEl.disabled = isDisabled;
+      }
+
+      function showLanguageChooser() {
+        if (!currentReportId) return;
+
+        const bubble = addBubble(
+          "assistant",
+          "Report loaded. Please select your language to start the analysis:",
+          false
+        );
+
+        const wrapper = document.createElement("div");
+        wrapper.style.marginTop = "8px";
+        wrapper.style.display = "flex";
+        wrapper.style.gap = "6px";
+        wrapper.style.flexWrap = "wrap";
+
+        function makeLangButton(label, value) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.textContent = label;
+          btn.style.fontSize = "12px";
+          btn.style.padding = "6px 10px";
+          btn.style.borderRadius = "999px";
+          btn.addEventListener("click", async () => {
+            preferredLanguage = value;
+            bubble.textContent = `Language selected: ${label}. Analyzing your report…`;
+            await sendMessage();
+          });
+          return btn;
+        }
+
+        wrapper.appendChild(makeLangButton("English", "en"));
+        wrapper.appendChild(makeLangButton("Hindi", "hi"));
+        wrapper.appendChild(makeLangButton("Marathi", "mr"));
+        bubble.appendChild(wrapper);
       }
 
       function addTranslationControls(container, sourceMarkdown) {
+        if (preferredLanguage !== "en") {
+          // When a non-English language is chosen up-front, we auto-translate instead
+          // of showing manual language toggles.
+          return;
+        }
         if (!sourceMarkdown) return;
 
         const existing = container.querySelector(".translation-controls");
@@ -390,10 +418,9 @@
       async function sendMessage() {
         setError("");
         const message = (messageEl.value || "").trim();
-        const file = fileEl.files && fileEl.files[0] ? fileEl.files[0] : null;
 
-        if (!message && !file && !currentReportId) {
-          setError("Please type a message or upload a PDF report.");
+        if (!message && !currentReportId) {
+          setError("Please type a message or use a report link.");
           return;
         }
 
@@ -405,39 +432,6 @@
         const thinkingBubble = addBubble("assistant", "Working…", false);
 
         setInputsDisabled(true);
-
-        // If a PDF is selected and either we have never uploaded it or the
-        // file changed, upload once to /upload-report and cache the text
-        // server-side. Subsequent /chat calls only send report_id.
-        if (file) {
-          const signature = fileSignature(file);
-          if (!currentReportId || signature !== lastUploadedFileSignature) {
-            try {
-              const uploadForm = new FormData();
-              uploadForm.append("file", file);
-
-              const uploadRes = await fetch("/upload-report", {
-                method: "POST",
-                body: uploadForm,
-              });
-              const uploadData = await uploadRes.json().catch(() => ({}));
-              if (!uploadRes.ok || !uploadData.report_id) {
-                const uploadError =
-                  uploadData && uploadData.error
-                    ? uploadData.error
-                    : "Failed to upload PDF.";
-                throw new Error(uploadError);
-              }
-              currentReportId = uploadData.report_id;
-              lastUploadedFileSignature = signature;
-            } catch (e) {
-              thinkingBubble.textContent = "Error.";
-              setError(e && e.message ? e.message : "Could not upload PDF.");
-              setInputsDisabled(false);
-              return;
-            }
-          }
-        }
 
         const formData = new FormData();
         formData.append("message", message);
@@ -461,7 +455,11 @@
           const replyMarkdown = data.reply_markdown || "";
           lastAssistantMarkdown = replyMarkdown;
           thinkingBubble.innerHTML = DOMPurify.sanitize(marked.parse(replyMarkdown));
-          addTranslationControls(thinkingBubble, lastAssistantMarkdown);
+          if (preferredLanguage === "en") {
+            addTranslationControls(thinkingBubble, lastAssistantMarkdown);
+          } else {
+            await translateReport(lastAssistantMarkdown, preferredLanguage);
+          }
 
           // Update conversation history from server response
           if (data.history && Array.isArray(data.history)) {
@@ -484,16 +482,8 @@
         chatEl.innerHTML = "";
         setError("");
         messageEl.value = "";
-        fileEl.value = "";
-        fileNameEl.textContent = "";
         conversationHistory = []; // Reset history
         currentReportId = null;
-        lastUploadedFileSignature = null;
-      });
-
-      fileEl.addEventListener("change", () => {
-        const f = fileEl.files && fileEl.files[0] ? fileEl.files[0] : null;
-        fileNameEl.textContent = f ? f.name : "";
       });
 
       async function ingestReportFromQuery() {
@@ -516,17 +506,13 @@
           }
 
           currentReportId = data.report_id;
-          lastUploadedFileSignature = null;
-          fileEl.value = "";
-          fileNameEl.textContent = "Loaded from link";
 
           // Clear query params to prevent re-ingest on refresh.
           const newUrl = window.location.pathname + window.location.hash;
           window.history.replaceState(null, "", newUrl);
 
-          // Auto-analyze once the report is loaded.
-          bubble.textContent = "Report loaded. Analyzing…";
-          await sendMessage();
+          bubble.textContent = "Report link loaded.";
+          showLanguageChooser();
         } catch (e) {
           bubble.textContent = "Error.";
           setError(e && e.message ? e.message : "Could not load the PDF link.");
