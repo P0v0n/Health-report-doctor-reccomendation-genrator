@@ -127,6 +127,10 @@ def create_app() -> Flask:
             except (json.JSONDecodeError, TypeError):
                 history = []
 
+            language_raw = (request.form.get("language") or "en").strip().lower()
+            if language_raw not in {"en", "hi", "mr"}:
+                language_raw = "en"
+
             report_id_raw = (request.form.get("report_id") or "").strip()
             has_report = bool(report_id_raw)
 
@@ -196,6 +200,7 @@ def create_app() -> Flask:
                 report_text=report_text,
                 patient_name_hint=patient_name_hint,
                 conversation_history=history,
+                target_language=language_raw,
             )
         except RuntimeError as exc:
             return jsonify({"error": str(exc)}), 500
@@ -545,6 +550,7 @@ def call_gemini(
     report_text: str,
     patient_name_hint: Optional[str],
     conversation_history: Optional[List[Dict[str, str]]] = None,
+    target_language: str = "en",
 ) -> Tuple[Dict[str, Any], List[Dict[str, str]]]:
     """Call Gemini and return a validated JSON payload for the frontend.
 
@@ -574,6 +580,17 @@ def call_gemini(
         )
         report_text = report_text[:MAX_REPORT_CHARS]
 
+    # Normalize language.
+    lang = (target_language or "en").strip().lower()
+    if lang not in {"en", "hi", "mr"}:
+        lang = "en"
+    if lang == "hi":
+        language_label = "Hindi"
+    elif lang == "mr":
+        language_label = "Marathi"
+    else:
+        language_label = "English"
+
     # Build context + (optional) conversation history into a single prompt.
     context_parts: List[str] = [APP_UI_CONTEXT]
     if report_text.strip():
@@ -583,6 +600,13 @@ def call_gemini(
 
     if patient_name_hint:
         context_parts.append(f"PATIENT_NAME_HINT:\n{patient_name_hint}")
+
+    context_parts.append(
+        "RESPONSE_LANGUAGE_INSTRUCTIONS:\n"
+        f"- Respond in {language_label}.\n"
+        "- Preserve all biomarker names, numeric values, units, and reference ranges exactly as in HEALTH_REPORT_TEXT.\n"
+        "- Do not add or remove any findings compared to what can be derived from HEALTH_REPORT_TEXT.\n"
+    )
 
     # Include prior turns as a textual transcript for context.
     conversation_lines: List[str] = []

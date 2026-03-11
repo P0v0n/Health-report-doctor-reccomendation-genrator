@@ -225,7 +225,7 @@
         <div class="brand">
           <h1>
             Healthnovo
-          </h1>
+          </h1>  
           <p></p>
         </div>
         <img
@@ -344,11 +344,6 @@
       }
 
       function addTranslationControls(container, sourceMarkdown) {
-        if (preferredLanguage !== "en") {
-          // When a non-English language is chosen up-front, we auto-translate instead
-          // of showing manual language toggles.
-          return;
-        }
         if (!sourceMarkdown) return;
 
         const existing = container.querySelector(".translation-controls");
@@ -436,6 +431,7 @@
         const formData = new FormData();
         formData.append("message", message);
         formData.append("history", JSON.stringify(conversationHistory));
+        formData.append("language", preferredLanguage);
         if (currentReportId) {
           formData.append("report_id", currentReportId);
         }
@@ -455,11 +451,7 @@
           const replyMarkdown = data.reply_markdown || "";
           lastAssistantMarkdown = replyMarkdown;
           thinkingBubble.innerHTML = DOMPurify.sanitize(marked.parse(replyMarkdown));
-          if (preferredLanguage === "en") {
-            addTranslationControls(thinkingBubble, lastAssistantMarkdown);
-          } else {
-            await translateReport(lastAssistantMarkdown, preferredLanguage);
-          }
+          addTranslationControls(thinkingBubble, lastAssistantMarkdown);
 
           // Update conversation history from server response
           if (data.history && Array.isArray(data.history)) {
